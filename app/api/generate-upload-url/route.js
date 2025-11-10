@@ -10,10 +10,12 @@ const s3 = new S3Client({
   },
 });
 
-export async function POST(req) {
+export async function POST(request) {
   try {
-    const { fileName, fileType } = await req.json();
-    const key = `uploads/${Date.now()}-${fileName}`;
+    const { fileName, fileType } = await request.json();
+    // Use .replace(/\s+/g, "_") to prevent spaces in file names, which can cause issues with S3 keys and URLs
+    const sanitizedFileName = fileName.replace(/\s+/g, "_");
+    const key = `uploads/${Date.now()}-${sanitizedFileName}`;
 
     const command = new PutObjectCommand({
       Bucket: process.env.S3_BUCKET_NAME,
@@ -21,7 +23,9 @@ export async function POST(req) {
       ContentType: fileType,
     });
 
+    // Generate a pre-signed URL valid for one hour
     const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
+
     return NextResponse.json({ uploadUrl, key });
   } catch (error) {
     console.error("Error generating upload URL:", error);
@@ -29,6 +33,7 @@ export async function POST(req) {
   }
 }
 
+// Handler for CORS preflight requests
 export async function OPTIONS() {
   return NextResponse.json({}, { status: 200 });
 }

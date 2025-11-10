@@ -4,6 +4,7 @@ import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, PutCommand } from "@aws-sdk/lib-dynamodb";
 import { v4 as uuidv4 } from "uuid";
 
+// Initialize AWS Clients
 const rekognitionClient = new RekognitionClient({
   region: process.env.AWS_REGION,
   credentials: {
@@ -19,35 +20,54 @@ const ddbClient = new DynamoDBClient({
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   },
 });
-const docClient = DynamoDBDocumentClient.from(ddbClient);
 
-export async function POST(req) {
+// Use the Document Client for easier item operations (PutCommand)
+const ddbDocClient = DynamoDBDocumentClient.from(ddbClient);
+
+export async function POST(request) {
   try {
-    const { key } = await req.json();
-    if (!key) throw new Error("Missing key");
+    const { key } = await request.json();
+    if (!key) throw new Error("Missing S3 key in request body.");
 
-    const params = {
-      Image: { S3Object: { Bucket: process.env.S3_BUCKET_NAME, Name: key } },
+    // 1. Call AWS Rekognition to detect labels
+    const rekognitionParams = {
+      Image: { 
+        S3Object: { 
+          Bucket: process.env.S3_BUCKET_NAME, 
+          Name: key 
+        } 
+      },
       MaxLabels: 10,
       MinConfidence: 75,
     };
 
-    const { Labels } = await rekognitionClient.send(new DetectLabelsCommand(params));
+    const { Labels } = await rekognitionClient.send(new DetectLabelsCommand(rekognitionParams));
+    
+    // Extract tags and construct the final S3 public URL
     const tags = Labels.map((label) => label.Name);
+    // Correctly construct the image URL including the region (important for access)
     const imageUrl = `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
 
+    // 2. Save each tag as a separate record in DynamoDB
     for (const tag of tags) {
-      await docClient.send(
+      // DynamoDB table is designed for sparse index (GSI) on 'tag' for searching
+      await ddbDocClient.send(
         new PutCommand({
           TableName: process.env.DYNAMODB_TABLE_NAME,
-          Item: { imageID: uuidv4(), imageUrl, tag },
+          Item: { 
+            imageID: uuidv4(), // Unique primary key for the record
+            imageUrl, 
+            tag 
+          },
         })
       );
     }
 
-    return NextResponse.json({ tags });
-  } catch (err) {
-    console.error("Error processing image:", err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    // Return the detected tags to the frontend
+    return NextResponse.json({ tags }, { status: 200 });
+  } catch (error) {
+    console.error("Error processing image:", error);
+    // Return the error message to the client for better debugging
+    return NextResponse.json({ error: error.message || "Unknown error during image processing" }, { status: 500 });
   }
 }

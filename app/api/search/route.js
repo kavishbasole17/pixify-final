@@ -1,42 +1,109 @@
+// app/api/search/route.js (Resolved Conflict)
 import { NextResponse } from "next/server";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
 import { DynamoDBDocumentClient, ScanCommand } from "@aws-sdk/lib-dynamodb";
+import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
-const ddb = new DynamoDBClient({
+// Centralized AWS configuration
+const awsConfig = {
   region: process.env.AWS_REGION,
   credentials: {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   },
-});
-const docClient = DynamoDBDocumentClient.from(ddb);
+};
 
-export async function GET(req) {
+// Initialize DynamoDB and S3 Clients
+const ddbClient = new DynamoDBClient(awsConfig);
+const ddbDocClient = DynamoDBDocumentClient.from(ddbClient);
+const s3Client = new S3Client(awsConfig);
+
+export async function GET(request) {
   try {
-    const { searchParams } = new URL(req.url);
-    const query = searchParams.get("query")?.trim().toLowerCase();
-    if (!query) return NextResponse.json([]);
+    const { searchParams } = new URL(request.url);
+    // Frontend uses the parameter 'query'
+    const searchQuery = searchParams.get("query")?.trim().toLowerCase(); 
+    
+    if (!searchQuery) {
+      // If the query is empty, return an empty set.
+      return NextResponse.json([], { status: 200 });
+    }
 
-    const { Items } = await docClient.send(new ScanCommand({
+    // 1. Scan DynamoDB to retrieve all image metadata
+    const scanCommand = new ScanCommand({
       TableName: process.env.DYNAMODB_TABLE_NAME,
-    }));
+    });
+    const { Items } = await ddbDocClient.send(scanCommand);
 
-    const imageMap = new Map();
-    for (const item of Items || []) {
+    if (!Items || Items.length === 0) {
+      return NextResponse.json([], { status: 200 });
+    }
+
+    // 2. Aggregate all tags by image URL and normalize tags for searching
+    const aggregatedImages = new Map();
+    const originalTagsMap = new Map();
+
+    for (const item of Items) {
       if (!item.imageUrl || !item.tag) continue;
-      const tags = imageMap.get(item.imageUrl) || [];
-      tags.push(item.tag.toLowerCase());
-      imageMap.set(item.imageUrl, tags);
+      
+      const normalizedTags = aggregatedImages.get(item.imageUrl) || [];
+      const originalTags = originalTagsMap.get(item.imageUrl) || [];
+
+      // Add tag for searching (normalized)
+      if (!normalizedTags.includes(item.tag.toLowerCase())) {
+        normalizedTags.push(item.tag.toLowerCase());
+      }
+      // Add tag for display (original casing)
+      if (!originalTags.includes(item.tag)) {
+        originalTags.push(item.tag);
+      }
+      
+      aggregatedImages.set(item.imageUrl, normalizedTags);
+      originalTagsMap.set(item.imageUrl, originalTags);
     }
 
-    const filtered = [];
-    for (const [url, tags] of imageMap.entries()) {
-      if (tags.some((t) => t.includes(query))) filtered.push({ url, tags });
+    // 3. Filter images that match the search query
+    const matchingImages = [];
+    for (const [imageUrl, tags] of aggregatedImages.entries()) {
+      // Check if ANY normalized tag includes the search query
+      if (tags.some((t) => t.includes(searchQuery))) {
+        matchingImages.push({ 
+          imageUrl, 
+          tags: originalTagsMap.get(imageUrl) 
+        });
+      }
+    }
+    
+    // 4. Generate signed URLs and format the results
+    const finalResults = [];
+    for (const { imageUrl, tags } of matchingImages) {
+      // Extract the S3 Key from the full image URL
+      const key = imageUrl.split(".amazonaws.com/")[1]; 
+
+      const command = new GetObjectCommand({ 
+        Bucket: process.env.S3_BUCKET_NAME, 
+        Key: key 
+      });
+
+      const signedUrl = await getSignedUrl(s3Client, command, { expiresIn: 3600 });
+      
+      finalResults.push({ 
+        id: key, 
+        url: signedUrl, 
+        tags: tags,
+        // Mock name and description for frontend display
+        name: key.split('/').pop().split('.').slice(0, -1).join('.') || 'Untitled Image',
+        description: tags.join(', ') || 'AI-generated tags', 
+      });
     }
 
-    return NextResponse.json(filtered);
-  } catch (err) {
-    console.error("Search error:", err);
+    return NextResponse.json(finalResults, { status: 200 });
+
+  } catch (error) {
+    // Crucial for debugging: log the full error stack to the server terminal
+    console.error("Search error:", error);
+    // Return a generic error to the client
     return NextResponse.json({ error: "Search failed" }, { status: 500 });
   }
 }
