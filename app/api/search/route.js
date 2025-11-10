@@ -11,23 +11,43 @@ const ddbClient = new DynamoDBClient({
 });
 const ddbDocClient = DynamoDBDocumentClient.from(ddbClient);
 
-export async function GET(request) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const q = searchParams.get("q")?.toLowerCase() || "";
+export async function GET(req) {
+  const { searchParams } = new URL(req.url);
+  const query = searchParams.get("q")?.trim().toLowerCase();
 
-    const scanCmd = new ScanCommand({
+  if (!query) {
+    return NextResponse.json([], { status: 200 });
+  }
+
+  try {
+    const scanCommand = new ScanCommand({
       TableName: process.env.DYNAMODB_TABLE_NAME,
     });
-    const { Items } = await ddbDocClient.send(scanCmd);
+    const { Items } = await ddbDocClient.send(scanCommand);
 
-    const results = Items.filter((item) =>
-      item.tag.toLowerCase().includes(q)
+    // ✅ Safely filter, skip undefined tags
+    const filtered = Items.filter(
+      (item) => item?.tag && item.tag.toLowerCase().includes(query)
     );
+
+    // ✅ Group by imageUrl and return
+    const grouped = {};
+    filtered.forEach((item) => {
+      if (!grouped[item.imageUrl]) grouped[item.imageUrl] = [];
+      grouped[item.imageUrl].push(item.tag);
+    });
+
+    const results = Object.entries(grouped).map(([url, tags]) => ({
+      url,
+      tags,
+    }));
 
     return NextResponse.json(results, { status: 200 });
   } catch (error) {
     console.error("Search error:", error);
-    return NextResponse.json({ error: "Error searching" }, { status: 500 });
+    return NextResponse.json(
+      { error: "Search failed", details: error.message },
+      { status: 500 }
+    );
   }
 }
