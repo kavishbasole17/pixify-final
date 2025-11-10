@@ -19,43 +19,35 @@ const ddbClient = new DynamoDBClient({
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   },
 });
-const ddbDocClient = DynamoDBDocumentClient.from(ddbClient);
+const docClient = DynamoDBDocumentClient.from(ddbClient);
 
-export async function POST(request) {
+export async function POST(req) {
   try {
-    const { key } = await request.json();
+    const { key } = await req.json();
+    if (!key) throw new Error("Missing key");
 
     const params = {
-      Image: {
-        S3Object: {
-          Bucket: process.env.S3_BUCKET_NAME,
-          Name: key,
-        },
-      },
+      Image: { S3Object: { Bucket: process.env.S3_BUCKET_NAME, Name: key } },
       MaxLabels: 10,
       MinConfidence: 75,
     };
 
     const { Labels } = await rekognitionClient.send(new DetectLabelsCommand(params));
-
-    const imageUrl = `https://${process.env.S3_BUCKET_NAME}.s3.amazonaws.com/${key}`;
     const tags = Labels.map((label) => label.Name);
+    const imageUrl = `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${key}`;
 
     for (const tag of tags) {
-      const putCmd = new PutCommand({
-        TableName: process.env.DYNAMODB_TABLE_NAME,
-        Item: {
-          imageID: uuidv4(), // ✅ add a unique primary key
-          imageUrl,
-          tag,
-        },
-      });
-      await ddbDocClient.send(putCmd);
+      await docClient.send(
+        new PutCommand({
+          TableName: process.env.DYNAMODB_TABLE_NAME,
+          Item: { imageID: uuidv4(), imageUrl, tag },
+        })
+      );
     }
 
     return NextResponse.json({ tags });
-  } catch (error) {
-    console.error("Error processing image:", error);
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  } catch (err) {
+    console.error("Error processing image:", err);
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
 }

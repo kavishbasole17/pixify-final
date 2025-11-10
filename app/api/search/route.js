@@ -1,53 +1,42 @@
 import { NextResponse } from "next/server";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { ScanCommand, DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+import { DynamoDBDocumentClient, ScanCommand } from "@aws-sdk/lib-dynamodb";
 
-const ddbClient = new DynamoDBClient({
+const ddb = new DynamoDBClient({
   region: process.env.AWS_REGION,
   credentials: {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
   },
 });
-const ddbDocClient = DynamoDBDocumentClient.from(ddbClient);
+const docClient = DynamoDBDocumentClient.from(ddb);
 
 export async function GET(req) {
-  const { searchParams } = new URL(req.url);
-  const query = searchParams.get("q")?.trim().toLowerCase();
-
-  if (!query) {
-    return NextResponse.json([], { status: 200 });
-  }
-
   try {
-    const scanCommand = new ScanCommand({
+    const { searchParams } = new URL(req.url);
+    const query = searchParams.get("query")?.trim().toLowerCase();
+    if (!query) return NextResponse.json([]);
+
+    const { Items } = await docClient.send(new ScanCommand({
       TableName: process.env.DYNAMODB_TABLE_NAME,
-    });
-    const { Items } = await ddbDocClient.send(scanCommand);
-
-    // ✅ Safely filter, skip undefined tags
-    const filtered = Items.filter(
-      (item) => item?.tag && item.tag.toLowerCase().includes(query)
-    );
-
-    // ✅ Group by imageUrl and return
-    const grouped = {};
-    filtered.forEach((item) => {
-      if (!grouped[item.imageUrl]) grouped[item.imageUrl] = [];
-      grouped[item.imageUrl].push(item.tag);
-    });
-
-    const results = Object.entries(grouped).map(([url, tags]) => ({
-      url,
-      tags,
     }));
 
-    return NextResponse.json(results, { status: 200 });
-  } catch (error) {
-    console.error("Search error:", error);
-    return NextResponse.json(
-      { error: "Search failed", details: error.message },
-      { status: 500 }
-    );
+    const imageMap = new Map();
+    for (const item of Items || []) {
+      if (!item.imageUrl || !item.tag) continue;
+      const tags = imageMap.get(item.imageUrl) || [];
+      tags.push(item.tag.toLowerCase());
+      imageMap.set(item.imageUrl, tags);
+    }
+
+    const filtered = [];
+    for (const [url, tags] of imageMap.entries()) {
+      if (tags.some((t) => t.includes(query))) filtered.push({ url, tags });
+    }
+
+    return NextResponse.json(filtered);
+  } catch (err) {
+    console.error("Search error:", err);
+    return NextResponse.json({ error: "Search failed" }, { status: 500 });
   }
 }
