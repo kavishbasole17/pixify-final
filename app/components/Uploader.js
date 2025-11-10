@@ -18,7 +18,6 @@ export default function Uploader({ onUploadSuccess }) {
     }
 
     setUploading(true);
-
     try {
       const res = await fetch("/api/generate-upload-url", {
         method: "POST",
@@ -40,7 +39,7 @@ export default function Uploader({ onUploadSuccess }) {
         body: JSON.stringify({ key }),
       });
 
-      alert("✅ Image uploaded successfully!");
+      alert("✅ File uploaded successfully!");
       if (onUploadSuccess) onUploadSuccess();
     } catch (error) {
       console.error("Upload failed:", error);

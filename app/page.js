@@ -6,20 +6,18 @@ import SearchableImageGrid from "./components/SearchableImageGrid";
 export default function Home() {
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // called after upload completes successfully
   const handleUploadSuccess = () => {
+    // trigger refresh when an image uploads successfully
     setRefreshKey((prev) => prev + 1);
   };
 
   return (
-    <main className="min-h-screen bg-[#0a0a0a] text-white flex flex-col items-center py-10">
-      <h1 className="text-3xl font-bold mb-6 text-center text-white">
-        Pixify
-      </h1>
+    <main className="flex flex-col items-center justify-start min-h-screen py-10 px-5">
+      <h1 className="text-4xl font-bold text-white mb-10">Pixify</h1>
 
       <Uploader onUploadSuccess={handleUploadSuccess} />
 
-      <div className="mt-10 w-full">
+      <div className="mt-10 w-full max-w-6xl">
         <SearchableImageGrid key={refreshKey} />
       </div>
     </main>
